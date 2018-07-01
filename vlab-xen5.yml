@@ -1,0 +1,132 @@
+---
+  - hosts : xen
+    become: true
+    tasks:
+         - name: install xen-hypervisor
+           apt: name=xen-hypervisor-amd64 state=present update_cache=yes
+           run_once: true
+           register:
+           notify: reboot system
+
+         - name: Wait for system to boot up
+           local_action: wait_for host={{ ansible_ssh_host }} port={{ ansible_ssh_port }} state=started delay=15 timeout=300
+           become: False
+
+         - debug: msg="We're back again. Running on {{ inventory_hostname }}"
+
+         - name: install major packages
+           apt: name={{item}} state=present update_cache=yes
+           with_items:
+               - python
+               - python-pip
+               - bridge-utils
+               - postgresql
+               - glusterfs-client
+               - libpq-dev
+               - python-dev
+               - python-psycopg2
+               - git
+
+         - name: install python packages
+           pip: name={{item}} state=present
+           with_items:
+               - virtualenv
+               - virtualenvwrapper
+
+         - name: add vitualenv .bashrc
+           lineinfile: dest=/root/.bashrc line="export WORKON_HOME=~/Envs"
+
+         - name: add vitualenvwrapper .bashrc
+           lineinfile: dest=/root/.bashrc line="source /usr/local/bin/virtualenvwrapper.sh"
+
+         - name: make vlab directory
+           file: path={{ item }} state=directory mode=0751
+           with_items:
+               - /home/vlab
+               - /mnt/vlab-datastore
+
+         - name: pip virtualenv and virtualenvwrapper
+           pip: name={{ item }} virtualenv=/root/Envs/vital virtualenv_python=python2.7
+           with_items:
+               - psycopg2==2.6.2
+
+#for new grub 16.04			   
+         - name: Set Xen cmdline
+           lineinfile:
+               path: /etc/default/grub.d/xen.cfg
+               regexp: "^GRUB_CMDLINE_XEN="
+               line: "GRUB_CMDLINE_XEN="GRUB_CMDLINE_XEN="dom0_mem=32G,max:32G dom0_max_vcpus=8 dom0_vcpus_pin iommu=1 loglvl=all guest_loglvl=all com1=9600,8n1,0x3e8,5 console=com1,vga""
+               register: xencmdline
+
+         - name: Set dom0 linux cmdline (for serial access to VMs)
+           lineinfile:
+               path: /etc/default/grub.d/xen.cfg
+               regexp: "^GRUB_CMDLINE_LINUX_XEN_REPLACE="
+               line: "GRUB_CMDLINE_LINUX_XEN_REPLACE="GRUB_CMDLINE_LINUX="loglevel=9 console=hvc0 earlyprintk=xen""
+               register: linuxcmdline
+			   
+# for old grub ubuntu 14.04
+#         - name: copy grub file 
+#           copy: src=./files/grub dest=/etc/default mode=0644
+
+#         - name: Update GRUB
+#           command: update-grub
+#           when: install.changed or grubcfg.changed or xencmdline.changed or linuxcmdline.changed
+
+#         - name: copy network interfaces file
+#           copy: src=./files/interfaces dest=/etc/network mode=0644
+
+#         - name: Restart interfaces to apply changes
+#           service: name=network state=restarted; 
+
+#         - name: sleep for 3 seconds and continue with play
+#           wait_for: timeout=3
+
+         - name: copy hosts file
+           copy: src=./files/hosts dest=/etc mode=0644
+
+         - name: copy hostname file
+           copy: src=./files/hostname dest=/etc mode=0644
+
+#         - name: add mount at /mnt/vlab-datastore to fstab to mount on boot
+#           lineinfile: dest=/etc/fstab line="Vlab-gluster1:/vlab /mnt/vlab-datastore glusterfs defaults,_netdev 0 0"
+
+#         - name: mount gluster volume at /mnt/vlab-datastore
+#           shell: mount -t glusterfs 128.238.66.30:volume1 /mnt/vlab-datastore
+#           args:
+#           executable: /bin/bash		
+#alternatively
+#         - name: mount gluster volume at /mnt/vlab-datastore 
+#           action: mount name=/mnt/vlab-datastore src=128.238.66.30:volume1 fstype=glusterfs opts=defaults,_netdev state=mounted
+#           tags: glusterfs-client
+
+#         - name: create OS_images symlink
+#           file: src=/mnt/vlab-datastore/OS_images dest=/home state=link
+
+#         - name: create vlab_scp symlink
+#           file: src=/mnt/vlab-datastore/vlab_scp dest=/home state=link
+
+#         - name: create vmdsk symlink
+#           file: src=/mnt/vlab-datastore/vm_dsk dest=/home state=link		   
+
+         - name: clone xen-api repository
+           git: repo='https://github.com/vital2/xen-api'
+                dest=/home/vital
+                clone=yes
+                update=no
+
+         - name: give execute permission to scripts folder
+           file: dest=/home/vital/scripts mode=a+x
+
+         - name: copy on_xen_startup script to /etc/init file
+           copy: src=./files/etc/init/vital_on_xen_start.conf dest=/etc/init mode=0744	
+
+         - name: copy on_xen_startup script to /etc/init file
+           copy: src=./files/etc/init/vital_xen_api.conf dest=/etc/init mode=0744	
+
+    handlers:	   
+         - name: reboot system
+           shell: sleep 2 && shutdown -r now "Ansible triggered reboot"
+           async: 1
+           poll: 0
+           ignore_errors: true
